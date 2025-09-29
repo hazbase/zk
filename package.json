@@ -1,0 +1,57 @@
+{
+  "name": "@hazbase/zk",
+  "version": "0.0.1",
+  "description": "An SDK helper that integrates with the hazBase backend to ZK (Groth16) KYC/threshold proofs using Poseidon commitments and Merkle membership proofs.",
+  "author": "IndieSquare Inc <info@hazbase.com>",
+  "keywords": [
+    "hazBase",
+    "backend",
+    "zk",
+    "web3",
+    "typescript",
+    "blockchain",
+    "dapps",
+    "evm",
+    "ethereum"
+  ],
+  "homepage": "https://lp.hazbase.com/",
+  "repository": "hazbase/zk",
+  "license": "Apache-2.0",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "sideEffects": false,
+  "dependencies": {
+    "circomlibjs": "^0.1.7",
+    "ethers": "^6.12.1",
+    "poseidon-lite": "^0.3.0",
+    "snarkjs": "^0.7.5"
+  },
+  "scripts": {
+    "build": "tsup",
+    "prepublishOnly": "npm run build",
+    "clean": "rimraf dist"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/circomlibjs": "^0.1.6",
+    "@types/node": "^22.15.17",
+    "@types/snarkjs": "^0.7.9",
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.3"
+  },
+  "files": [
+    "dist",
+    "assets",
+    "README.md",
+    "LICENSE"
+  ]
+}
