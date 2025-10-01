@@ -41,12 +41,15 @@ class MerkleTree {
   private nodes = new Map<string, bigint>();
   root: bigint = 0n;
 
+  /** Build an empty Merkle tree with fixed depth; zero nodes will be derived via Poseidon. */
   constructor(depth: number) {
     this.depth = depth;
   }
 
+  /** Compose a consistent map key for level/index addressing. */
   key(lvl: number, idx: bigint) { return `${lvl}:${idx}`; }
 
+  /** Initialize zero nodes (z0=H1(0), zi=H2(zi-1,zi-1)) and set initial root. */
   async initZeros() {
     await PoseidonHelper.init();
     this.zeros.length = 0;
@@ -58,6 +61,7 @@ class MerkleTree {
     this.root = this.zeros[this.depth];
   }
 
+  /** Insert a leaf at an exact (padded) index and bubble up parents deterministically. */
   insertLeafAtIndex(value: FieldLike, index: number) {
     // value is raw attribute for allow-tree; leaf = H1(value)
     const leaf = PoseidonHelper.H1(value);
@@ -89,6 +93,7 @@ class MerkleTree {
     this.root = this.nodes.get(this.key(this.depth, 0n))!;
   }
 
+  /** Densify level-0 to `width` and recompute all parents bottom-up to stabilize the root. */
   finalize(width: number) {
     // Ensure level-0 is densely set and rebuild upwards
     for (let i = 0; i < width; i++) {
@@ -108,6 +113,7 @@ class MerkleTree {
     this.root = this.nodes.get(this.key(this.depth, 0n))!;
   }
 
+  /** Build a Merkle proof (siblings+indices) from a padded index. */
   getPath(index: number) {
     let idx = BigInt(index);
     const siblings: bigint[] = [];
@@ -132,24 +138,25 @@ export type AllowPath = { siblings: bigint[]; indices: bigint[]; root: bigint; }
 export type IssuerPath = { siblings: bigint[]; indices: bigint[]; root: bigint; };
 
 export interface GenerateArgsStrict {
-  list: FieldLike[],
+  list: FieldLike[],          // Input allowlist universe
   // Policy binding
-  policyId: FieldLike;
-  policyVersion: number;
+  policyId: FieldLike;        // Identifier of the policy being proven
+  policyVersion: number;      // Version to prevent replay across policy updates
   // Address & domain (as field)
-  addr: FieldLike;           // already coerced to field (e.g., BigInt(address))
+  addr: FieldLike;            // Holder address coerced into field (e.g., BigInt(address))
   // Attribute and secrets
-  value: FieldLike;              // e.g., 392
-  salt?: FieldLike;               // user salt
-  idNull: FieldLike;             // user nullifier secret
-  chainId: number;
-  verifier: string;
+  value: FieldLike;           // Attribute value to prove (e.g., 392)
+  salt?: FieldLike;           // Optional user salt; generated if absent
+  idNull: FieldLike;          // Nullifier secret to prevent cross-context linking
+  chainId: number;            // EVM chain id for domain separation
+  verifier: string;           // On-chain verifier address (for domain separator)
 }
 
 // ---------------------------------
 // Helper: recompute membership checks
 // ---------------------------------
 
+/** Rebuild issuer root from (value,salt,addr,domain) and a path; used for pre-proof sanity. */
 function recomputeIssuerRoot(value: FieldLike, salt: FieldLike, addrFelt: FieldLike, domainFelt: FieldLike, path: IssuerPath): bigint {
   const leaf = PoseidonHelper.H2(value, salt);                // leaf = Poseidon(value, salt)
   let cur = PoseidonHelper.H3(leaf, addrFelt, domainFelt);    // issuerLeaf = Poseidon(leaf, addr, domain)
@@ -161,6 +168,7 @@ function recomputeIssuerRoot(value: FieldLike, salt: FieldLike, addrFelt: FieldL
   return PoseidonHelper.toF(cur);
 }
 
+/** Resolve package directory in both CJS/ESM environments. */
 function pkgDir(): string {
   // @ts-ignore
   return typeof __dirname !== "undefined"
@@ -172,12 +180,14 @@ function pkgDir(): string {
 // Statement / Nullifier
 // ---------------------------------
 
+/** Poseidon hash for statement binding: policyId/version + allowRoot + (addr,domain). */
 function computeStatementHash(policyId: FieldLike, policyVersion: number, allowRoot: FieldLike, addrFelt: FieldLike, domainFelt: FieldLike): bigint {
   const s1 = PoseidonHelper.H2(policyId, policyVersion);
   const s2 = PoseidonHelper.H2(allowRoot, addrFelt);
   return PoseidonHelper.H3(s1, s2, domainFelt);
 }
 
+/** Nullifier binding idNull to (policyId, version) to avoid reuse across policies. */
 function computeNullifier(idNull: FieldLike, policyId: FieldLike, policyVersion: number): bigint {
   const n1 = PoseidonHelper.H2(idNull, policyId);
   return PoseidonHelper.H2(n1, policyVersion);
@@ -187,6 +197,15 @@ function computeNullifier(idNull: FieldLike, policyId: FieldLike, policyVersion:
 // Core generator
 // ---------------------------------
 
+/**
+ * generateProofAllowlist()
+ * Strict end-to-end prover that:
+ *  1) Builds allow-tree path for `value` from `list` (deterministic)
+ *  2) Builds issuer-tree path for (value,salt,addr,domain)
+ *  3) Recomputes and checks both roots locally
+ *  4) Constructs inputs in the exact public/private order the circuit expects
+ *  5) Produces Groth16 proof and verifies it (defensive check)
+ */
 export async function generateProofAllowlist(args: GenerateArgsStrict) {
   await PoseidonHelper.init();
 
@@ -256,6 +275,7 @@ export async function generateProofAllowlist(args: GenerateArgsStrict) {
   const verified = await groth16.verify(vKey, publicSignals, proof);
   if (!verified) throw new Error("Groth16 verification failed");
 
+  // Normalize proof tuple order for common on-chain verifiers (alt-bn128/Groth16)
   const a: readonly [string, string] = [proof.pi_a[0].toString(), proof.pi_a[1]];
   const b: readonly [[string, string], [string, string]] = [
     [proof.pi_b[0][1], proof.pi_b[0][0]],
@@ -274,6 +294,7 @@ export async function generateProofAllowlist(args: GenerateArgsStrict) {
 // (Optional) Convenience: build allow path from a list (for tests)
 // ---------------------------------
 
+/** Recompute a Merkle root from (leaf, indices, siblings) for local verification. */
 function recomputeRootFromProof(
   leaf: bigint,
   indices: bigint[],
@@ -292,6 +313,10 @@ function recomputeRootFromProof(
   return cur;
 }
 
+/**
+ * Build an allowlist proof for `target` from `values` with fixed depth (default 16).
+ * Deterministically canonicalizes, builds the tree, selects the target index, and verifies locally.
+ */
 export async function buildAllowFromList(values: FieldLike[], target: FieldLike, depth = 16): Promise<AllowPath> {
   await PoseidonHelper.init();
 
@@ -321,6 +346,8 @@ export async function buildAllowFromList(values: FieldLike[], target: FieldLike,
 // ---------------------------------
 // (Optional) Convenience: build issuer path (for tests)
 // ---------------------------------
+
+/** EIP-712-like domain separator in field: keccak256(abi.encode(chainId, verifier)) % Fr. */
 const domainSeparator = (chainId: number, verifier: string) => {
   // keccak256(abi.encode(chainid, address(this))) % field
   const k = ethers.keccak256(
@@ -329,6 +356,10 @@ const domainSeparator = (chainId: number, verifier: string) => {
   return PoseidonHelper.toF(k);
 };
 
+/**
+ * Build a single-entry issuer path for (value,salt,addr,domain) at an index (default 0).
+ * Produces siblings/indices suitable for the circuit's issuer tree constraints.
+ */
 export async function buildIssuerForUser(value: FieldLike, salt: FieldLike, addrFelt: FieldLike, domainFelt: FieldLike, index = 0, depth = 20): Promise<IssuerPath> {
   await PoseidonHelper.init();
   
